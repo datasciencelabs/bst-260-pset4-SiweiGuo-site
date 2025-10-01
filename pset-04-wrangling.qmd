@@ -1,6 +1,7 @@
 ---
 title: Problem set 4
 date: 2025-10-05
+format: pdf
 ---
 
 In the next problem set, we plan to explore the relationship between COVID-19 death rates and vaccination rates across US states by visually examining their correlation. This analysis will involve gathering COVID-19 related data from the CDC's API and then extensively processing it to merge the various datasets. Since the population sizes of states vary significantly, we will focus on comparing rates rather than absolute numbers. To facilitate this, we will also source population data from the US Census to accurately calculate these rates. 
@@ -46,7 +47,7 @@ request <- request(paste0(
   "get=POP_2020,POP_2021,NAME&for=state:*&key=",
   census_key
 ))
-print(request)
+# print(request)
 ```
 
 
@@ -72,8 +73,9 @@ Hints: 1) Use the `resp_body_json` function. 2) The first row of the matrix will
 ```{r}
 population <- resp_body_json(response,
                              # automatically convert JSON arrays into R vectors
-                             simplifyVector = T)
-head(population)
+                             simplifyVector = T) |> as.matrix()
+# head(population)
+class(population)
 ```
 
 6. Examine the `population` matrix you just created. Notice that 1) it is not tidy, 2) the column types are not what we want, and 3) the first row is a header. Convert `population` to a tidy dataset. Remove the state ID column and change the name of the column with state names to `state_name`. Add a column with state abbreviations called `state`. Make sure you assign the abbreviations for DC and PR correctly. Hint: Use the **janitor** package to make the first row the header. 
@@ -150,25 +152,28 @@ points to a JSON file that lists the states in the 10 Public Health Service (PHS
 library(jsonlite)
 library(purrr)
 url <- "https://github.com/datasciencelabs/2025/raw/refs/heads/main/data/regions.json"
-# regions <- use jsonlit JSON parser 
-region_raw <- fromJSON(url)
-head(region_raw)
-# regions <- convert list to data frame. You can use map_df in purrr package
-regions <- map_df(seq_len(nrow(region_raw)), function(i) {
+# regions <- use jsonlit JSON parser
+regions_raw <- fromJSON(url)
+regions <- 
+  # regions <- convert list to data frame. You can use map_df in purrr package
+  map_df(seq_len(nrow(regions_raw)), function(i) {
   tibble(
-    state_name = region_raw$states[[i]],
-    region = region_raw$region[[i]],
-    region_name = region_raw$region_name[[i]]
+    state_name = regions_raw$states[[i]],
+    region = regions_raw$region[[i]],
+    region_name = regions_raw$region_name[[i]]
   )
-})
+}) |>
+  # change long name
+  mutate(region_name = ifelse(
+    region_name == "New York and New Jersey, Puerto Rico, Virgin Islands",
+    "Other",
+    region_name
+  )
+) |>
+  select(state_name, region, region_name)
 head(regions)
-# long name change
-regions$region_name <- ifelse(
-  regions$region_name == "New York and New Jersey, Puerto Rico, Virgin Islands",
-  "Other",
-  regions$region_name
-  )
 ```
+
 
 9. Add a region and region name columns to the `population` data frame.
 
@@ -196,9 +201,10 @@ cases_raw <- req |>
   as_tibble()
 head(cases_raw)
 ```
+```{r}
+print("Comments: The cases_raw data contains 1000 rows instead of all rows. This is because the API has a default limit of 1000 records per request. Thus, when we didn't increase the limit parameter, we would only get 1000 rows.")
 ```
-Comments: The cases_raw data contains 1000 rows instead of all rows. This is because the API has a default limit of 1000 records per request. Thus, when we didn't increase the limit parameter, we would only get 1000 rows. 
-```
+
 
 We see exactly 1,000 rows. We should be seeing over $52 \times 3$ rows per state.
 
@@ -214,34 +220,29 @@ cases_raw <- request(api) |>
 summary(cases_raw)
 ```
 ```{r}
-cases_wrangle <- cases_raw |>
+cases <- cases_raw |>
   mutate(
     # ISO-8601 datetime with a time not just simple date, so ymd can't parse
-    date = ymd(substr(end_date, 1, 10)),
+    date = as.Date(end_date),
     cases = as.numeric(new_cases)
   ) |>
+  filter(!is.na(state), !is.na(date), !is.na(cases)) |>
   select(state, date, cases)
-head(cases_wrangle)
+head(cases)
 ```
 
 
 12. For 2020 and 2021, make a time series plot of cases per 100,000 versus time for each state. Stratify the plot by region name. Make sure to label you graph appropriately. 
 
 ```{r}
-cases <- cases_wrangle |>
+cases |>
   mutate(year = year(date)) |>
   filter(year %in% c(2020, 2021)) |>
   left_join(population, by = c("state" = "state", "year" = "year")) |>
   mutate(cases_per_100k = cases / population * 100000) |>
   filter(!is.na(cases_per_100k)) |>
-  filter(!is.na(region_name))
-  
-head(cases)
-```
-```{r}
-ggplot(cases, aes(
-  x = date, y = cases_per_100k, color = state,
-)) +
+  filter(!is.na(region_name)) |>
+  ggplot(aes(x = date, y = cases_per_100k, color = state)) +
   geom_line() +
   facet_wrap(~ region_name) +
   labs(
@@ -252,17 +253,21 @@ ggplot(cases, aes(
   theme(
     axis.text.x = element_text(angle = 45)
   )
+  
+#head(cases)
 ```
+
 
 13. The dates in the `cases` dataset are stored as character strings. Use the **lubridate** package to properly parse the `date` column, then create a summary table showing the total COVID-19 cases by month and year for 2020 and 2021. The table should have columns for year, month (as month name), and total cases across all states. Order by year and month. Use the **knitr** package and `kable()` function to display the results as a formatted table.
 
 ```{r}
 library(knitr)
-cases <- cases_wrangle |>
-  mutate(date = ymd(date),
-         year = year(date),
-         month = month(date),
-         day = day(date)) |>
+library(lubridate)
+cases |>
+  mutate(date = lubridate::ymd(date),
+         year = lubridate::year(date),
+         month = lubridate::month(date, label = T, abbr = F),
+         day = lubridate::day(date)) |>
   filter(year %in% c(2020, 2021)) |>
   group_by(year, month) |>
   summarise(
@@ -271,7 +276,7 @@ cases <- cases_wrangle |>
   ) |>
   arrange(year, month) |>
   kable()
-cases
+# cases
 ```
 
 14. The following URL provides additional COVID-19 data from the CDC in JSON format:
@@ -292,20 +297,17 @@ head(req2)
 deaths <- req2 |>
   req_perform()|>
   resp_body_json(simplifyVector = T) |>
-  as_tibble()
-summary(deaths)
-```
-```{r}
-deaths <- deaths |>
+  as_tibble() |>
   select(state, end_date, covid_19_deaths) |>
   rename(
     date = end_date,
     deaths = covid_19_deaths
   ) |>
   mutate(
-    date = ymd(substr(date, 1, 10)),
+    date = as.Date(date),
     deaths = as.numeric(deaths)
-  )
+  ) |>
+  filter(!is.na(state), !is.na(date), !is.na(deaths))
 head(deaths)
 ```
 
@@ -313,6 +315,7 @@ head(deaths)
 
 ```{r}
 deaths |>
+  filter(state != "United States") |>
   group_by(state) |>
   summarise(
     total = sum(deaths, na.rm = T),
@@ -333,3 +336,5 @@ deaths |>
     axis.text.x = element_text(angle = 45)
   )
 ```
+
+
